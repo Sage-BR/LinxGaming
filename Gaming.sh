@@ -23,7 +23,7 @@ log_gpu() { echo -e "${PURPLE}🎮 $1${NC}"; }
 log_intel() { echo -e "${CYAN}🔷 Intel: $1${NC}"; }
 
 ### CONFIGURAÇÕES ###
-PREFIX="${1:-$HOME/Games/wine-gaming}"
+PREFIX="${1:-$HOME/.wine}"
 ARCH="win64"
 DXVK_VERSION="2.3.1"
 VKD3D_VERSION="2.12"
@@ -88,13 +88,24 @@ detect_system() {
         log_warning "GPU não identificada"
     fi
     
-    # Detectar CPU
     CPU_CORES=$(nproc)
     log_info "🖥️  CPU cores: $CPU_CORES"
-    
-    # Detectar RAM
-    AVAILABLE_RAM=$(free -m | awk 'NR==2{printf "%.0f", $7*0.8 }')
-    log_info "🧠 RAM disponível: ${AVAILABLE_RAM}MB"
+
+    AVAILABLE_RAM=$(free -m | awk 'NR==2{print $2}')
+    log_info "🧠 RAM total detectada: ${AVAILABLE_RAM}MB"
+
+    if command -v glxinfo &>/dev/null; then
+        AVAILABLE_VRAM=$(glxinfo | grep -i "video memory" | grep -o '[0-9]\+' | head -1)
+        if [[ -n "$AVAILABLE_VRAM" ]]; then
+            log_info "🎮 VRAM detectada: ${AVAILABLE_VRAM}MB"
+        else
+            AVAILABLE_VRAM=$((AVAILABLE_RAM / 2))
+            log_warning "VRAM não detectada. Usando metade da RAM: ${AVAILABLE_VRAM}MB"
+        fi
+    else
+        AVAILABLE_VRAM=$((AVAILABLE_RAM / 2))
+        log_warning "glxinfo não disponível. Usando metade da RAM como VRAM: ${AVAILABLE_VRAM}MB"
+    fi
     
     # Verificar se é Intel integrado
     if [[ "$GPU_VENDOR" == "intel" ]]; then
@@ -104,6 +115,38 @@ detect_system() {
     
     # Verificar Vulkan por vendor
     check_vulkan_support
+}
+
+# Configurar Wine com otimizações e memória simulada
+configure_wine() {
+    log_info "⚙️  Configurando Wine..."
+
+    log_info "🧠 Aplicando VideoMemorySize: ${AVAILABLE_VRAM}MB"
+
+    cat > /tmp/wine_gaming.reg << EOF
+Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Software\Wine\Direct3D]
+"VideoMemorySize"="${AVAILABLE_VRAM}"
+
+[HKEY_CURRENT_USER\Software\Wine\DirectSound]
+"DefaultBitsPerSample"=dword:00000010
+"DefaultSampleRate"=dword:0000ac44
+
+[HKEY_CURRENT_USER\Software\Wine\DirectInput]
+"MouseWarpOverride"="force"
+
+[HKEY_CURRENT_USER\Software\Wine\X11 Driver]
+"GrabPointer"="Y"
+"UseTakeFocus"="N"
+"Decorated"="Y"
+"ScreenDepth"=dword:00000020
+EOF
+
+    WINEPREFIX="$PREFIX" wine regedit /tmp/wine_gaming.reg
+    rm /tmp/wine_gaming.reg
+
+    log_success "Wine configurado com VRAM simulada: ${AVAILABLE_VRAM}MB"
 }
 
 # Verificar suporte Vulkan específico por vendor
@@ -305,16 +348,16 @@ EOF
     log_success "Wine configurado"
 }
 
-# Instalar bibliotecas com Winetricks
 install_libraries() {
     if ! command -v winetricks &> /dev/null; then
         log_warning "Winetricks não disponível, pulando instalação de bibliotecas"
         return 0
     fi
     
+    export WINEPREFIX="$PREFIX"  # << exporta para o ambiente!
+    
     log_info "📦 Instalando bibliotecas essenciais com Winetricks..."
     
-    # Bibliotecas básicas
     local basic_libs=(
         "corefonts"
         "vcrun2019"
@@ -329,7 +372,6 @@ install_libraries() {
         "xinput"
     )
     
-    # Bibliotecas adicionais para Intel
     if [[ "$GPU_VENDOR" == "intel" ]]; then
         log_intel "Adicionando bibliotecas específicas para Intel..."
         basic_libs+=(
@@ -340,7 +382,7 @@ install_libraries() {
     fi
     
     log_info "🔧 Instalando bibliotecas..."
-    WINEPREFIX="$PREFIX" winetricks -q "${basic_libs[@]}"
+    winetricks --force -q "${basic_libs[@]}"
     
     log_success "Bibliotecas instaladas"
 }
